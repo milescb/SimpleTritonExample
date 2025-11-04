@@ -1,0 +1,21 @@
+backend: "recommended"
+max_batch_size: 0
+input [
+  {
+    name: "INPUT"
+    data_type: TYPE_FP32
+    dims: [ 4, 4 ]
+  }
+]
+output [
+  {
+    name: "OUTPUT"
+    data_type: TYPE_FP32
+    dims: [ 4, 4 ]
+  }
+]
+instance_group [
+  {
+    kind: KIND_CPU
+  }
+]
