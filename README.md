@@ -17,6 +17,13 @@ cmake -B . -S ../ \
 
 cmake --build . --target install -- -j20
 ```
+To compile with AMD GPUs, add the argument `-DTRITON_ENABLE_ROCM=ON` during configuration. 
+
+```
+cmake -B . -S ../ \
+    -DCMAKE_INSTALL_PREFIX=../install/ -DCMAKE_BUILD_TYPE=Release -DTRITON_ENABLE_ROCM=ON -DCMAKE_HIP_ARCHITECTURES="gfx1101" -DTRITON_USE_LOCAL_DEPS=ON -DTRITON_LOCAL_DEPS_PATH=../triton-deps
+```
+
 To start the sever after building, run the command:
 
 ```

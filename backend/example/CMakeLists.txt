@@ -31,13 +31,10 @@ project(tutorialrecommendedbackend LANGUAGES C CXX)
 #
 # Options
 #
-# Must include options required for this project as well as any
-# projects included in this one by FetchContent.
-#
-# GPU support is disabled by default because recommended backend
-# doesn't use GPUs.
+# GPU support options for both NVIDIA and AMD
 #
 option(TRITON_ENABLE_GPU "Enable GPU support in backend" OFF)
+option(TRITON_ENABLE_ROCM "Enable AMD ROCm support" OFF)
 option(TRITON_ENABLE_STATS "Include statistics collections in backend" ON)
 
 # SHOULD BE UPDATED FOR NEW RELEASES
@@ -45,6 +42,9 @@ set(TRITON_REPO_ORGANIZATION "https://github.com/triton-inference-server" CACHE 
 set(TRITON_COMMON_REPO_TAG "r25.02" CACHE STRING "Tag for triton-inference-server/common repo")
 set(TRITON_CORE_REPO_TAG "r25.02" CACHE STRING "Tag for triton-inference-server/core repo")
 set(TRITON_BACKEND_REPO_TAG "r25.02" CACHE STRING "Tag for triton-inference-server/backend repo")
+
+# ROCm path configuration
+set(ROCM_PATH "/opt/rocm" CACHE PATH "ROCm installation path")
 
 #
 # Setting C++ min standard
@@ -56,31 +56,151 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 #
+# ROCm/HIP Configuration
+#
+if(TRITON_ENABLE_ROCM)
+  # Use TRITON_ROCM_HOME for compatibility with template behavior
+  set(TRITON_ROCM_HOME ${ROCM_PATH})
+
+  # Export environment variables for ROCm tools
+  set(ENV{ROCM_PATH} ${TRITON_ROCM_HOME})
+  set(ENV{HIP_PATH} ${TRITON_ROCM_HOME})
+
+  # Add ROCm install dirs to CMake prefix path so find_package can locate components
+  list(APPEND CMAKE_PREFIX_PATH
+    ${TRITON_ROCM_HOME}
+    ${TRITON_ROCM_HOME}/hip
+    ${TRITON_ROCM_HOME}/llvm
+    ${TRITON_ROCM_HOME}/lib/cmake
+    $ENV{ROCM_PATH}
+    $ENV{HIP_PATH}
+  )
+
+  # Also append any cmake components under lib/cmake
+  file(GLOB rocm_cmake_components ${TRITON_ROCM_HOME}/lib/cmake/*)
+  list(APPEND CMAKE_PREFIX_PATH ${rocm_cmake_components})
+
+  # Default HIP compiler and architectures if not provided by user
+  if(NOT DEFINED CMAKE_HIP_COMPILER)
+    set(CMAKE_HIP_COMPILER "${TRITON_ROCM_HOME}/llvm/bin/clang++")
+  endif()
+
+  if(NOT DEFINED CMAKE_HIP_ARCHITECTURES)
+    set(CMAKE_HIP_ARCHITECTURES "gfx906;gfx908;gfx90a;gfx1030;gfx1100;gfx1101;gfx940;gfx941;gfx942" CACHE STRING "HIP architectures")
+  endif()
+
+  # Enable HIP language and find HIP package
+  enable_language(HIP)
+  find_package(hip REQUIRED CONFIG PATHS ${TRITON_ROCM_HOME})
+
+  # Add ROCm include directories and link directories
+  include_directories(
+    ${TRITON_ROCM_HOME}/include
+    ${TRITON_ROCM_HOME}/hip/include
+    ${HIP_INCLUDE_DIRS}
+  )
+  link_directories(
+    ${TRITON_ROCM_HOME}/lib
+    ${TRITON_ROCM_HOME}/hip/lib
+  )
+
+  # Define preprocessor macro for conditional compilation
+  add_compile_definitions(TRITON_ENABLE_ROCM)
+  add_compile_definitions(__HIP_PLATFORM_AMD__)
+  set(HIP_PLATFORM "amd" CACHE STRING "HIP platform")
+
+  # Try to detect ROCm version from .info/version-dev (if present)
+  if(EXISTS "${TRITON_ROCM_HOME}/.info/version-dev")
+    file(READ "${TRITON_ROCM_HOME}/.info/version-dev" ROCM_VERSION_DEV_RAW)
+    string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)-.*$" ROCM_VERSION_DEV_MATCH ${ROCM_VERSION_DEV_RAW})
+    if(ROCM_VERSION_DEV_MATCH)
+      set(ROCM_VERSION_DEV_MAJOR ${CMAKE_MATCH_1})
+      set(ROCM_VERSION_DEV_MINOR ${CMAKE_MATCH_2})
+      set(ROCM_VERSION_DEV_PATCH ${CMAKE_MATCH_3})
+      set(ROCM_VERSION_DEV "${ROCM_VERSION_DEV_MAJOR}.${ROCM_VERSION_DEV_MINOR}.${ROCM_VERSION_DEV_PATCH}")
+      math(EXPR ROCM_VERSION_DEV_INT "(${ROCM_VERSION_DEV_MAJOR}*10000) + (${ROCM_VERSION_DEV_MINOR}*100) + ${ROCM_VERSION_DEV_PATCH}")
+    endif()
+  endif()
+
+  message(STATUS "ROCm support enabled")
+  message(STATUS "ROCm path: ${TRITON_ROCM_HOME}")
+  message(STATUS "HIP compiler: ${CMAKE_HIP_COMPILER}")
+  message(STATUS "HIP architectures: ${CMAKE_HIP_ARCHITECTURES}")
+  if(DEFINED ROCM_VERSION_DEV)
+    message(STATUS "ROCm version (from .info/version-dev): ${ROCM_VERSION_DEV} (${ROCM_VERSION_DEV_INT})")
+  endif()
+endif()
+
+#
+# CUDA Configuration (for NVIDIA GPUs)
+#
+if(TRITON_ENABLE_GPU AND NOT TRITON_ENABLE_ROCM)
+  find_package(CUDAToolkit REQUIRED)
+  enable_language(CUDA)
+  add_compile_definitions(TRITON_ENABLE_GPU)
+  message(STATUS "CUDA support enabled")
+endif()
+
+#
 # Dependencies
 #
-# FetchContent requires us to include the transitive closure of all
-# repos that we depend on so that we can override the tags.
+# Option to use local dependencies instead of fetching from Git
 #
+option(TRITON_USE_LOCAL_DEPS "Use local dependency directories instead of fetching from Git" OFF)
+set(TRITON_LOCAL_DEPS_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../triton-deps" CACHE PATH "Path to local Triton dependencies")
+
+# CRITICAL: Disable all testing BEFORE including any dependencies
+# This must be set before FetchContent to propagate to all subprojects
+set(BUILD_TESTING OFF CACHE BOOL "Disable all testing" FORCE)
+set(TRITON_ENABLE_TESTS OFF CACHE BOOL "Disable Triton tests" FORCE)
+set(TRITON_ENABLE_EXAMPLES OFF CACHE BOOL "Disable examples" FORCE)
+
+# Prevent CMake from downloading anything
+set(FETCHCONTENT_FULLY_DISCONNECTED ON CACHE BOOL "Disable all downloads" FORCE)
+set(FETCHCONTENT_QUIET OFF CACHE BOOL "Show fetch content output" FORCE)
+
 include(FetchContent)
 
-FetchContent_Declare(
-  repo-common
-  GIT_REPOSITORY ${TRITON_REPO_ORGANIZATION}/common.git
-  GIT_TAG ${TRITON_COMMON_REPO_TAG}
-  GIT_SHALLOW ON
-)
-FetchContent_Declare(
-  repo-core
-  GIT_REPOSITORY ${TRITON_REPO_ORGANIZATION}/core.git
-  GIT_TAG ${TRITON_CORE_REPO_TAG}
-  GIT_SHALLOW ON
-)
-FetchContent_Declare(
-  repo-backend
-  GIT_REPOSITORY ${TRITON_REPO_ORGANIZATION}/backend.git
-  GIT_TAG ${TRITON_BACKEND_REPO_TAG}
-  GIT_SHALLOW ON
-)
+if(TRITON_USE_LOCAL_DEPS)
+  # Use local directories
+  message(STATUS "Using local dependencies from: ${TRITON_LOCAL_DEPS_PATH}")
+  message(STATUS "BUILD_TESTING is: ${BUILD_TESTING}")
+  message(STATUS "FETCHCONTENT_FULLY_DISCONNECTED is: ${FETCHCONTENT_FULLY_DISCONNECTED}")
+  
+  FetchContent_Declare(
+    repo-common
+    SOURCE_DIR ${TRITON_LOCAL_DEPS_PATH}/common
+  )
+  FetchContent_Declare(
+    repo-core
+    SOURCE_DIR ${TRITON_LOCAL_DEPS_PATH}/core
+  )
+  FetchContent_Declare(
+    repo-backend
+    SOURCE_DIR ${TRITON_LOCAL_DEPS_PATH}/backend
+  )
+else()
+  # Fetch from Git (original behavior)
+  FetchContent_Declare(
+    repo-common
+    GIT_REPOSITORY ${TRITON_REPO_ORGANIZATION}/common.git
+    GIT_TAG ${TRITON_COMMON_REPO_TAG}
+    GIT_SHALLOW ON
+  )
+  FetchContent_Declare(
+    repo-core
+    GIT_REPOSITORY ${TRITON_REPO_ORGANIZATION}/core.git
+    GIT_TAG ${TRITON_CORE_REPO_TAG}
+    GIT_SHALLOW ON
+  )
+  FetchContent_Declare(
+    repo-backend
+    GIT_REPOSITORY ${TRITON_REPO_ORGANIZATION}/backend.git
+    GIT_TAG ${TRITON_BACKEND_REPO_TAG}
+    GIT_SHALLOW ON
+  )
+endif()
+
 FetchContent_MakeAvailable(repo-common repo-core repo-backend)
 
 #
@@ -112,6 +232,7 @@ target_compile_options(
   $<$<CXX_COMPILER_ID:MSVC>:/Wall /D_WIN32_WINNT=0x0A00 /EHsc /Zc:preprocessor>
 )
 
+# Base libraries
 target_link_libraries(
   triton-recommended-backend
   PRIVATE
@@ -120,6 +241,35 @@ target_link_libraries(
     triton-core-serverstub  # from repo-core
     triton-backend-utils    # from repo-backend
 )
+
+# Add ROCm/HIP libraries if enabled
+if(TRITON_ENABLE_ROCM)
+  target_link_libraries(
+    triton-recommended-backend
+    PRIVATE
+      hip::host
+      hip::device
+  )
+  
+  # Add ROCm runtime libraries
+  target_link_libraries(
+    triton-recommended-backend
+    PRIVATE
+      ${ROCM_PATH}/lib/libamdhip64.so
+  )
+  
+  # Optional: Add rocBLAS, rocRAND, etc. if needed
+  # target_link_libraries(triton-recommended-backend PRIVATE roc::rocblas)
+endif()
+
+# Add CUDA libraries if enabled
+if(TRITON_ENABLE_GPU AND NOT TRITON_ENABLE_ROCM)
+  target_link_libraries(
+    triton-recommended-backend
+    PRIVATE
+      CUDA::cudart
+  )
+endif()
 
 if(WIN32)
   set_target_properties(
@@ -151,11 +301,6 @@ install(
   LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/../../models/example
   RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX}/../../models/example
 )
-
-# install(DIRECTORY ${CMAKE_INSTALL_PREFIX}/../../models
-#         DESTINATION ${CMAKE_INSTALL_PREFIX}
-#         USE_SOURCE_PERMISSIONS
-# )
 
 install(
   EXPORT
