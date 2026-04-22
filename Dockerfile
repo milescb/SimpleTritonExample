@@ -1,13 +1,9 @@
 FROM nvcr.io/nvidia/tritonserver:25.02-py3
-# nvcc version: 12.8 ## nvcc --version
 
-LABEL description="Triton Server backend with other dependencies for traccc-as-a-Service"
-LABEL version="1.0"
+LABEL description="Triton Server backend with other dependencies for traccc-as-a-Service (ROCm/AMD)"
+LABEL version="2.0"
 
 # Install dependencies
-# Update the CUDA Linux GPG Repository Key
-RUN apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/3bf863cc.pub
-
 RUN apt-get update -y && apt-get install -y \
     build-essential curl git freeglut3-dev libfreetype6-dev libpcre3-dev\
     libboost-dev libboost-filesystem-dev libboost-program-options-dev libboost-test-dev \
@@ -30,12 +26,15 @@ RUN pip3 install -U pandas matplotlib seaborn tritonclient[all] mplhep \
     ipykernel numpy
 
 # Environment variables
-ENV LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/lib:/usr/local/lib"
+ENV LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/lib:/usr/local/lib:/opt/rocm/lib:/opt/rocm/hip/lib"
 ENV GET="curl --location --silent --create-dirs"
 ENV UNPACK_TO_SRC="tar -xz --strip-components=1 --directory src"
 ENV PREFIX="/usr/local"
-ENV TORCH_CUDA_ARCH_LIST="80"
 ENV PYTHONNOUSERSITE=True
+# ROCm/AMD GPU support
+ENV ROCM_PATH="/opt/rocm"
+ENV HIP_PATH="/opt/rocm"
+ENV PATH="$PATH:/opt/rocm/bin:/opt/rocm/llvm/bin"
 
 # Install GCC 13.3.0
 RUN apt-get update -y && apt-get install -y software-properties-common \
@@ -66,9 +65,15 @@ RUN cd /tmp && mkdir -p src \
   && cmake --build build -- install -j20\
   && cd /tmp && rm -rf src build
 
+# Install full ROCm development stack (HIP compiler, headers, runtime)
 RUN apt-get update -y && apt-get install -y wget gnupg2 ca-certificates \
-  && wget -qO - https://repo.radeon.com/rocm/rocm.gpg.key | apt-key add - \
-  && echo "deb [arch=amd64] https://repo.radeon.com/rocm/apt/ ubuntu main" >/etc/apt/sources.list.d/rocm.list \
+  && mkdir -p --mode=0755 /etc/apt/keyrings \
+  && wget -qO - https://repo.radeon.com/rocm/rocm.gpg.key \
+    | gpg --dearmor | tee /etc/apt/keyrings/rocm.gpg > /dev/null \
+  && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.2.4 jammy main" \
+    | tee /etc/apt/sources.list.d/rocm.list \
+  && echo -e 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600' \
+    | tee /etc/apt/preferences.d/rocm-pin-600 \
   && apt-get update -y \
-  && apt-get install -y rocm-smi \
+  && apt-get install -y rocm-hip-sdk rocminfo \
   && apt-get clean -y
