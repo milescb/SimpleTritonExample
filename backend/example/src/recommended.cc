@@ -31,13 +31,38 @@
 #include "triton/backend/backend_output_responder.h"
 #include "triton/core/tritonbackend.h"
 
-#ifdef TRITON_ENABLE_ROCM
+// Switch between different GPU languages / architectures
+#if defined(TRITON_ENABLE_ROCM)
 #include <hip/hip_runtime.h>
 #if defined(TRITON_ENABLE_ALPAKA)
 #include "AlpakaExample.h"
 #else
 #include "HipExample.h"
 #endif
+#elif defined(TRITON_ENABLE_CUDA)
+#include <cuda_runtime.h>
+#include "CudaExample.h"
+
+#define CUDA_ERROR_CHECK(EXP)                                                  \
+    do {                                                                       \
+        const cudaError_t errorCode = EXP;                                     \
+        if (errorCode != cudaSuccess) {                                        \
+            throw std::runtime_error(std::string("Failed to run " #EXP " (") + \
+                                     cudaGetErrorString(errorCode) + ")");     \
+        }                                                                      \
+    } while (false)
+
+static cudaStream_t setCudaDeviceAndGetStream(int deviceID)
+{
+    cudaError_t err = cudaSetDevice(deviceID);
+    if (err != cudaSuccess) {
+        throw std::runtime_error("Failed to set CUDA device: " +
+                                 std::string(cudaGetErrorString(err)));
+    }
+    cudaStream_t stream;
+    CUDA_ERROR_CHECK(cudaStreamCreate(&stream));
+    return stream;
+}
 #endif
 
 namespace triton { namespace backend { namespace recommended {
@@ -386,29 +411,38 @@ TRITONBACKEND_ModelFinalize(TRITONBACKEND_Model* model)
 // provides many common functions.
 //
 class ModelInstanceState : public BackendModelInstance {
- public:
-  static TRITONSERVER_Error* Create(
-      ModelState* model_state,
-      TRITONBACKEND_ModelInstance* triton_model_instance,
-      ModelInstanceState** state);
-  virtual ~ModelInstanceState() = default;
+  public:
+    static TRITONSERVER_Error* Create(
+        ModelState* model_state,
+        TRITONBACKEND_ModelInstance* triton_model_instance,
+        ModelInstanceState** state);
+    virtual ~ModelInstanceState() {
+    #ifdef TRITON_ENABLE_CUDA
+        if (cuda_stream_ != nullptr) {
+          cudaStreamDestroy(cuda_stream_);
+        }
+    #endif
+    }
 
-  // Get the state of the model that corresponds to this instance.
-  ModelState* StateForModel() const { return model_state_; }
+    // Get the state of the model that corresponds to this instance.
+    ModelState* StateForModel() const { return model_state_; }
 
-  // Define standalone object
-  std::unique_ptr<GpuProcessor> hip_gpu_processor_;
+    // Define standalone object
+    std::unique_ptr<GpuProcessor> hip_gpu_processor_;
+    #ifdef TRITON_ENABLE_CUDA
+      cudaStream_t cuda_stream_ = nullptr;
+    #endif
 
- private:
-  ModelInstanceState(
-      ModelState* model_state,
-      TRITONBACKEND_ModelInstance* triton_model_instance)
-      : BackendModelInstance(model_state, triton_model_instance),
-        model_state_(model_state)
-  {
-  }
+  private:
+    ModelInstanceState(
+        ModelState* model_state,
+        TRITONBACKEND_ModelInstance* triton_model_instance)
+        : BackendModelInstance(model_state, triton_model_instance),
+          model_state_(model_state)
+    {
+    }
 
-  ModelState* model_state_;
+    ModelState* model_state_;
 };
 
 TRITONSERVER_Error*
@@ -458,7 +492,7 @@ TRITONBACKEND_ModelInstanceInitialize(TRITONBACKEND_ModelInstance* instance)
   int device_id = instance_state->DeviceId();
   std::cout << device_id << std::endl;
 
-  #ifdef TRITON_ENABLE_ROCM
+  #if defined(TRITON_ENABLE_ROCM)
     hipError_t hip_err = hipSetDevice(device_id);
     if (hip_err != hipSuccess) {
       return TRITONSERVER_ErrorNew(
@@ -466,6 +500,13 @@ TRITONBACKEND_ModelInstanceInitialize(TRITONBACKEND_ModelInstance* instance)
           (std::string("hipSetDevice failed: ") +
           hipGetErrorString(hip_err))
               .c_str());
+    }
+  #elif defined(TRITON_ENABLE_CUDA)
+    try {
+      instance_state->cuda_stream_ = setCudaDeviceAndGetStream(device_id);
+    }
+    catch (const std::exception& e) {
+      return TRITONSERVER_ErrorNew(TRITONSERVER_ERROR_INTERNAL, e.what());
     }
   #endif
 
@@ -627,7 +668,7 @@ TRITONBACKEND_ModelInstanceExecute(
   // will not be valid until the backend synchronizes the GPU stream.
   const bool need_gpu_input_sync = collector.Finalize();
   if (need_gpu_input_sync) {
-    #ifdef TRITON_ENABLE_ROCM
+    #if defined(TRITON_ENABLE_ROCM)
         hipError_t sync_err = hipDeviceSynchronize();
         if (sync_err != hipSuccess) {
           LOG_MESSAGE(
@@ -636,11 +677,16 @@ TRITONBACKEND_ModelInstanceExecute(
               hipGetErrorString(sync_err))
                   .c_str());
         }
-    #else
-    LOG_MESSAGE(
-        TRITONSERVER_LOG_ERROR,
-        "'recommended' backend: unexpected CUDA sync required by collector");
-    #endif  // TRITON_ENABLE_ROCM
+    #elif defined(TRITON_ENABLE_CUDA)
+        cudaError_t sync_err = cudaDeviceSynchronize();
+        if (sync_err != cudaSuccess) {
+          LOG_MESSAGE(
+              TRITONSERVER_LOG_ERROR,
+              (std::string("cudaDeviceSynchronize failed after collector: ") +
+              cudaGetErrorString(sync_err))
+                  .c_str());
+        }
+    #endif
   }
 
   // The actual compute is done here!
@@ -705,7 +751,7 @@ TRITONBACKEND_ModelInstanceExecute(
   // the GPU stream.
   const bool need_gpu_output_sync = responder.Finalize();
   if (need_gpu_output_sync) {
-  #ifdef TRITON_ENABLE_ROCM
+  #if defined(TRITON_ENABLE_ROCM)
       hipError_t sync_err = hipDeviceSynchronize();
       if (sync_err != hipSuccess) {
         LOG_MESSAGE(
@@ -714,11 +760,16 @@ TRITONBACKEND_ModelInstanceExecute(
             hipGetErrorString(sync_err))
                 .c_str());
       }
-  #else
-    LOG_MESSAGE(
-        TRITONSERVER_LOG_ERROR,
-        "'recommended' backend: unexpected CUDA sync required by responder");
-  #endif  // TRITON_ENABLE_ROCM
+  #elif defined(TRITON_ENABLE_CUDA)
+      cudaError_t sync_err = cudaDeviceSynchronize();
+      if (sync_err != cudaSuccess) {
+        LOG_MESSAGE(
+            TRITONSERVER_LOG_ERROR,
+            (std::string("cudaDeviceSynchronize failed after responder: ") +
+            cudaGetErrorString(sync_err))
+                .c_str());
+      }
+  #endif
   }
 
   // Send all the responses that haven't already been sent because of

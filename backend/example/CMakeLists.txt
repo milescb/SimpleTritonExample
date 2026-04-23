@@ -153,6 +153,11 @@ endif()
 set(BUILD_TESTING OFF CACHE BOOL "Disable all testing" FORCE)
 set(TRITON_ENABLE_TESTS OFF CACHE BOOL "Disable Triton tests" FORCE)
 set(TRITON_ENABLE_EXAMPLES OFF CACHE BOOL "Disable examples" FORCE)
+# repo-backend enables CUDA unconditionally when TRITON_ENABLE_GPU=ON (its default).
+# Only keep it on if we are also building our CUDA backend.
+if(NOT TRITON_ENABLE_CUDA)
+  set(TRITON_ENABLE_GPU OFF CACHE BOOL "Disable GPU support in repo-backend" FORCE)
+endif()
 
 include(FetchContent)
 
@@ -207,6 +212,14 @@ if(TRITON_ENABLE_ROCM)
       $<TARGET_PROPERTY:triton-core-serverapi,INTERFACE_INCLUDE_DIRECTORIES>
       $<TARGET_PROPERTY:triton-core-serverstub,INTERFACE_INCLUDE_DIRECTORIES>
   )
+  target_include_directories(triton-recommended-backend PRIVATE
+    ${TRITON_ROCM_HOME}/hip/include
+  )
+elseif(TRITON_ENABLE_CUDA)
+  set_source_files_properties(
+    src/recommended.cc
+    PROPERTIES LANGUAGE CUDA
+  )
 endif()
 
 add_library(
@@ -222,9 +235,9 @@ target_include_directories(
 target_compile_features(triton-recommended-backend PRIVATE cxx_std_${TRITON_MIN_CXX_STANDARD})
 target_compile_options(
   triton-recommended-backend PRIVATE
-  $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>:
+  $<$<AND:$<COMPILE_LANGUAGE:CXX,HIP>,$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>>:
     -Wall -Wextra -Wno-unused-parameter -Wno-type-limits -Werror>
-  $<$<CXX_COMPILER_ID:MSVC>:/Wall /D_WIN32_WINNT=0x0A00 /EHsc /Zc:preprocessor>
+  $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:MSVC>>:/Wall /D_WIN32_WINNT=0x0A00 /EHsc /Zc:preprocessor>
 )
 
 # Base libraries
