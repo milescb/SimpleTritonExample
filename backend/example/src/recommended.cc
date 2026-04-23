@@ -31,6 +31,40 @@
 #include "triton/backend/backend_output_responder.h"
 #include "triton/core/tritonbackend.h"
 
+// Switch between different GPU languages / architectures
+#if defined(TRITON_ENABLE_ROCM)
+#include <hip/hip_runtime.h>
+#if defined(TRITON_ENABLE_ALPAKA)
+#include "AlpakaExample.h"
+#else
+#include "HipExample.h"
+#endif
+#elif defined(TRITON_ENABLE_CUDA)
+#include <cuda_runtime.h>
+#include "CudaExample.h"
+
+#define CUDA_ERROR_CHECK(EXP)                                                  \
+    do {                                                                       \
+        const cudaError_t errorCode = EXP;                                     \
+        if (errorCode != cudaSuccess) {                                        \
+            throw std::runtime_error(std::string("Failed to run " #EXP " (") + \
+                                     cudaGetErrorString(errorCode) + ")");     \
+        }                                                                      \
+    } while (false)
+
+static cudaStream_t setCudaDeviceAndGetStream(int deviceID)
+{
+    cudaError_t err = cudaSetDevice(deviceID);
+    if (err != cudaSuccess) {
+        throw std::runtime_error("Failed to set CUDA device: " +
+                                 std::string(cudaGetErrorString(err)));
+    }
+    cudaStream_t stream;
+    CUDA_ERROR_CHECK(cudaStreamCreate(&stream));
+    return stream;
+}
+#endif
+
 namespace triton { namespace backend { namespace recommended {
 
 //
@@ -377,26 +411,38 @@ TRITONBACKEND_ModelFinalize(TRITONBACKEND_Model* model)
 // provides many common functions.
 //
 class ModelInstanceState : public BackendModelInstance {
- public:
-  static TRITONSERVER_Error* Create(
-      ModelState* model_state,
-      TRITONBACKEND_ModelInstance* triton_model_instance,
-      ModelInstanceState** state);
-  virtual ~ModelInstanceState() = default;
+  public:
+    static TRITONSERVER_Error* Create(
+        ModelState* model_state,
+        TRITONBACKEND_ModelInstance* triton_model_instance,
+        ModelInstanceState** state);
+    virtual ~ModelInstanceState() {
+    #ifdef TRITON_ENABLE_CUDA
+        if (cuda_stream_ != nullptr) {
+          cudaStreamDestroy(cuda_stream_);
+        }
+    #endif
+    }
 
-  // Get the state of the model that corresponds to this instance.
-  ModelState* StateForModel() const { return model_state_; }
+    // Get the state of the model that corresponds to this instance.
+    ModelState* StateForModel() const { return model_state_; }
 
- private:
-  ModelInstanceState(
-      ModelState* model_state,
-      TRITONBACKEND_ModelInstance* triton_model_instance)
-      : BackendModelInstance(model_state, triton_model_instance),
-        model_state_(model_state)
-  {
-  }
+    // Define standalone object
+    std::unique_ptr<GpuProcessor> hip_gpu_processor_;
+    #ifdef TRITON_ENABLE_CUDA
+      cudaStream_t cuda_stream_ = nullptr;
+    #endif
 
-  ModelState* model_state_;
+  private:
+    ModelInstanceState(
+        ModelState* model_state,
+        TRITONBACKEND_ModelInstance* triton_model_instance)
+        : BackendModelInstance(model_state, triton_model_instance),
+          model_state_(model_state)
+    {
+    }
+
+    ModelState* model_state_;
 };
 
 TRITONSERVER_Error*
@@ -423,6 +469,7 @@ extern "C" {
 // instance is created to allow the backend to initialize any state
 // associated with the instance.
 //
+
 TRITONSERVER_Error*
 TRITONBACKEND_ModelInstanceInitialize(TRITONBACKEND_ModelInstance* instance)
 {
@@ -441,6 +488,29 @@ TRITONBACKEND_ModelInstanceInitialize(TRITONBACKEND_ModelInstance* instance)
       ModelInstanceState::Create(model_state, instance, &instance_state));
   RETURN_IF_ERROR(TRITONBACKEND_ModelInstanceSetState(
       instance, reinterpret_cast<void*>(instance_state)));
+  
+  int device_id = instance_state->DeviceId();
+  std::cout << device_id << std::endl;
+
+  #if defined(TRITON_ENABLE_ROCM)
+    hipError_t hip_err = hipSetDevice(device_id);
+    if (hip_err != hipSuccess) {
+      return TRITONSERVER_ErrorNew(
+          TRITONSERVER_ERROR_INTERNAL,
+          (std::string("hipSetDevice failed: ") +
+          hipGetErrorString(hip_err))
+              .c_str());
+    }
+  #elif defined(TRITON_ENABLE_CUDA)
+    try {
+      instance_state->cuda_stream_ = setCudaDeviceAndGetStream(device_id);
+    }
+    catch (const std::exception& e) {
+      return TRITONSERVER_ErrorNew(TRITONSERVER_ERROR_INTERNAL, e.what());
+    }
+  #endif
+
+  instance_state->hip_gpu_processor_ = std::make_unique<GpuProcessor>(device_id);
 
   return nullptr;  // success
 }
@@ -495,6 +565,22 @@ TRITONBACKEND_ModelInstanceExecute(
   RETURN_IF_ERROR(TRITONBACKEND_ModelInstanceState(
       instance, reinterpret_cast<void**>(&instance_state)));
   ModelState* model_state = instance_state->StateForModel();
+
+  // TODO: may be necessary to set the hip device again!
+  // TODO: check if this is needed!
+  // int hip_device_id = instance_state->DeviceId();
+  // if (hip_device_id < 0) {
+  //   hip_device_id = 0;
+  // }
+
+  // hipError_t hip_err = hipSetDevice(hip_device_id);
+  // if (hip_err != hipSuccess) {
+  //   return TRITONSERVER_ErrorNew(
+  //       TRITONSERVER_ERROR_INTERNAL,
+  //       (std::string("hipSetDevice failed: ") +
+  //       hipGetErrorString(hip_err))
+  //           .c_str());
+  // }
 
   // 'responses' is initialized as a parallel array to 'requests',
   // with one TRITONBACKEND_Response object for each
@@ -560,11 +646,8 @@ TRITONBACKEND_ModelInstanceExecute(
   BackendInputCollector collector(
       requests, request_count, &responses, model_state->TritonMemoryManager(),
       false /* pinned_enabled */, nullptr /* stream*/);
-
-  // To instruct ProcessTensor to "gather" the entire batch of input
-  // tensors into a single contiguous buffer in CPU memory, set the
-  // "allowed input types" to be the CPU ones (see tritonserver.h in
-  // the triton-inference-server/core repo for allowed memory types).
+  
+  // The backend completely deals with GPU memory
   std::vector<std::pair<TRITONSERVER_MemoryType, int64_t>> allowed_input_types =
       {{TRITONSERVER_MEMORY_CPU_PINNED, 0}, {TRITONSERVER_MEMORY_CPU, 0}};
 
@@ -582,44 +665,55 @@ TRITONBACKEND_ModelInstanceExecute(
           &input_buffer_memory_type_id));
 
   // Finalize the collector. If 'true' is returned, 'input_buffer'
-  // will not be valid until the backend synchronizes the CUDA
-  // stream or event that was used when creating the collector. For
-  // this backend, GPU is not supported and so no CUDA sync should
-  // be needed; so if 'true' is returned simply log an error.
-  const bool need_cuda_input_sync = collector.Finalize();
-  if (need_cuda_input_sync) {
-    LOG_MESSAGE(
-        TRITONSERVER_LOG_ERROR,
-        "'recommended' backend: unexpected CUDA sync required by collector");
+  // will not be valid until the backend synchronizes the GPU stream.
+  const bool need_gpu_input_sync = collector.Finalize();
+  if (need_gpu_input_sync) {
+    #if defined(TRITON_ENABLE_ROCM)
+        hipError_t sync_err = hipDeviceSynchronize();
+        if (sync_err != hipSuccess) {
+          LOG_MESSAGE(
+              TRITONSERVER_LOG_ERROR,
+              (std::string("hipDeviceSynchronize failed after collector: ") +
+              hipGetErrorString(sync_err))
+                  .c_str());
+        }
+    #elif defined(TRITON_ENABLE_CUDA)
+        cudaError_t sync_err = cudaDeviceSynchronize();
+        if (sync_err != cudaSuccess) {
+          LOG_MESSAGE(
+              TRITONSERVER_LOG_ERROR,
+              (std::string("cudaDeviceSynchronize failed after collector: ") +
+              cudaGetErrorString(sync_err))
+                  .c_str());
+        }
+    #endif
   }
 
-  // 'input_buffer' contains the batched input tensor. The backend can
-  // implement whatever logic is necessary to produce the output
-  // tensor. This backend simply logs the input tensor value and then
-  // returns the input tensor value in the output tensor so no actual
-  // computation is needed.
-
+  // The actual compute is done here!
   uint64_t compute_start_ns = 0;
   SET_TIMESTAMP(compute_start_ns);
+  
+  size_t num_cols = 4;
+  size_t num_rows = input_buffer_byte_size / (sizeof(float) * num_cols);
+  const float *rows_ptr = reinterpret_cast<const float *>(input_buffer);
 
-  LOG_MESSAGE(
-      TRITONSERVER_LOG_INFO,
-      (std::string("model ") + model_state->Name() + ": requests in batch " +
-       std::to_string(request_count))
-          .c_str());
-  std::string tstr;
-  IGNORE_ERROR(BufferAsTypedString(
-      tstr, input_buffer, input_buffer_byte_size,
-      model_state->TensorDataType()));
-  LOG_MESSAGE(
-      TRITONSERVER_LOG_INFO,
-      (std::string("batched " + model_state->InputTensorName() + " value: ") +
-       tstr)
-          .c_str());
+  std::vector<std::vector<float>> test_input;
 
-  const char* output_buffer = input_buffer;
-  TRITONSERVER_MemoryType output_buffer_memory_type = input_buffer_memory_type;
-  int64_t output_buffer_memory_type_id = input_buffer_memory_type_id;
+  for (size_t i = 0; i < num_rows; ++i)
+  {
+    test_input.emplace_back(rows_ptr + i*num_cols, rows_ptr + i*num_cols + num_cols);
+  }
+
+  auto output = instance_state->hip_gpu_processor_->run(test_input, test_input);
+
+  std::vector<float> flat_output;
+  flat_output.reserve(num_rows * num_cols);
+  for (const auto& row : output)
+    flat_output.insert(flat_output.end(), row.begin(), row.end());
+
+  const char* output_buffer = reinterpret_cast<const char*>(flat_output.data());
+  TRITONSERVER_MemoryType output_buffer_memory_type = TRITONSERVER_MEMORY_CPU;
+  int64_t output_buffer_memory_type_id = 0;
 
   uint64_t compute_end_ns = 0;
   SET_TIMESTAMP(compute_end_ns);
@@ -628,10 +722,6 @@ TRITONBACKEND_ModelInstanceExecute(
   RESPOND_ALL_AND_SET_NULL_IF_ERROR(
       responses, request_count,
       model_state->SupportsFirstDimBatching(&supports_first_dim_batching));
-
-  std::vector<int64_t> tensor_shape;
-  RESPOND_ALL_AND_SET_NULL_IF_ERROR(
-      responses, request_count, model_state->TensorShape(tensor_shape));
 
   // Because the output tensor values are concatenated into a single
   // contiguous 'output_buffer', the backend must "scatter" them out
@@ -649,6 +739,8 @@ TRITONBACKEND_ModelInstanceExecute(
       supports_first_dim_batching, false /* pinned_enabled */,
       nullptr /* stream*/);
 
+  std::vector<int64_t> tensor_shape = {static_cast<int64_t>(num_rows),
+                                          static_cast<int64_t>(num_cols)};
   responder.ProcessTensor(
       model_state->OutputTensorName().c_str(), model_state->TensorDataType(),
       tensor_shape, output_buffer, output_buffer_memory_type,
@@ -656,15 +748,28 @@ TRITONBACKEND_ModelInstanceExecute(
 
   // Finalize the responder. If 'true' is returned, the output
   // tensors' data will not be valid until the backend synchronizes
-  // the CUDA stream or event that was used when creating the
-  // responder. For this backend, GPU is not supported and so no CUDA
-  // sync should be needed; so if 'true' is returned simply log an
-  // error.
-  const bool need_cuda_output_sync = responder.Finalize();
-  if (need_cuda_output_sync) {
-    LOG_MESSAGE(
-        TRITONSERVER_LOG_ERROR,
-        "'recommended' backend: unexpected CUDA sync required by responder");
+  // the GPU stream.
+  const bool need_gpu_output_sync = responder.Finalize();
+  if (need_gpu_output_sync) {
+  #if defined(TRITON_ENABLE_ROCM)
+      hipError_t sync_err = hipDeviceSynchronize();
+      if (sync_err != hipSuccess) {
+        LOG_MESSAGE(
+            TRITONSERVER_LOG_ERROR,
+            (std::string("hipDeviceSynchronize failed after responder: ") +
+            hipGetErrorString(sync_err))
+                .c_str());
+      }
+  #elif defined(TRITON_ENABLE_CUDA)
+      cudaError_t sync_err = cudaDeviceSynchronize();
+      if (sync_err != cudaSuccess) {
+        LOG_MESSAGE(
+            TRITONSERVER_LOG_ERROR,
+            (std::string("cudaDeviceSynchronize failed after responder: ") +
+            cudaGetErrorString(sync_err))
+                .c_str());
+      }
+  #endif
   }
 
   // Send all the responses that haven't already been sent because of

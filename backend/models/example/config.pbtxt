@@ -4,18 +4,18 @@ input [
   {
     name: "INPUT"
     data_type: TYPE_FP32
-    dims: [ 4, 4 ]
+    dims: [ -1, 4 ]
   }
 ]
 output [
   {
     name: "OUTPUT"
     data_type: TYPE_FP32
-    dims: [ 4, 4 ]
+    dims: [ -1, 4 ]
   }
 ]
 instance_group [
   {
-    kind: KIND_CPU
+    kind: KIND_MODEL
   }
 ]

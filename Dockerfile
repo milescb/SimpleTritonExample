@@ -1,15 +1,9 @@
-# syntax=docker/dockerfile:experimental
-
 FROM nvcr.io/nvidia/tritonserver:25.02-py3
-# nvcc version: 12.8 ## nvcc --version
 
-LABEL description="Triton Server backend with other dependencies for traccc-as-a-Service"
-LABEL version="1.0"
+LABEL description="Triton Server backend with other dependencies for traccc-as-a-Service (ROCm/AMD)"
+LABEL version="2.0"
 
 # Install dependencies
-# Update the CUDA Linux GPG Repository Key
-RUN apt-key adv --fetch-keys https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/3bf863cc.pub
-
 RUN apt-get update -y && apt-get install -y \
     build-essential curl git freeglut3-dev libfreetype6-dev libpcre3-dev\
     libboost-dev libboost-filesystem-dev libboost-program-options-dev libboost-test-dev \
@@ -20,7 +14,7 @@ RUN apt-get update -y && apt-get install -y \
     libexpat-dev libeigen3-dev libftgl-dev libgl2ps-dev libglew-dev libgsl-dev \
     liblz4-dev liblzma-dev libx11-dev libxext-dev libxft-dev libxpm-dev libxerces-c-dev \
     libzstd-dev ccache libb64-dev \
-    libsuitesparse-dev libhwloc-dev libsuperlu-dev \
+    libsuitesparse-dev libhwloc-dev libsuperlu-dev tmux \
   && apt-get clean -y
 
 RUN apt-get update -y && apt-get install -y git-lfs \
@@ -28,15 +22,19 @@ RUN apt-get update -y && apt-get install -y git-lfs \
   && apt-get clean -y
 
 RUN ln -s /usr/bin/python3 /usr/bin/python
-RUN pip3 install -U pandas matplotlib seaborn
+RUN pip3 install -U pandas matplotlib seaborn tritonclient[all] mplhep \
+    ipykernel numpy
 
 # Environment variables
-ENV LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/lib:/usr/local/lib"
+ENV LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/lib:/usr/local/lib:/opt/rocm/lib:/opt/rocm/hip/lib"
 ENV GET="curl --location --silent --create-dirs"
 ENV UNPACK_TO_SRC="tar -xz --strip-components=1 --directory src"
 ENV PREFIX="/usr/local"
-ENV TORCH_CUDA_ARCH_LIST="80"
 ENV PYTHONNOUSERSITE=True
+# ROCm/AMD GPU support
+ENV ROCM_PATH="/opt/rocm"
+ENV HIP_PATH="/opt/rocm"
+ENV PATH="$PATH:/opt/rocm/bin:/opt/rocm/llvm/bin"
 
 # Install GCC 13.3.0
 RUN apt-get update -y && apt-get install -y software-properties-common \
@@ -67,13 +65,31 @@ RUN cd /tmp && mkdir -p src \
   && cmake --build build -- install -j20\
   && cd /tmp && rm -rf src build
 
-RUN pip3 install pyyaml astunparse expecttest!=0.2.0 hypothesis numpy psutil pyyaml requests setuptools types-dataclasses \
-    typing-extensions>=4.8.0 sympy filelock networkx jinja2 fsspec lintrunner ninja packaging optree>=0.11.0 setuptools
+# Install full ROCm development stack (HIP compiler, headers, runtime)
+RUN apt-get update -y && apt-get install -y wget gnupg2 ca-certificates \
+  && mkdir -p --mode=0755 /etc/apt/keyrings \
+  && wget -qO - https://repo.radeon.com/rocm/rocm.gpg.key \
+    | gpg --dearmor | tee /etc/apt/keyrings/rocm.gpg > /dev/null \
+  && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.2.4 noble main" \
+    | tee /etc/apt/sources.list.d/rocm.list \
+  && echo -e 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600' \
+    | tee /etc/apt/preferences.d/rocm-pin-600 \
+  && apt-get update -y \
+  && apt-get install -y rocm-dev hip-dev rocminfo rocrand-dev hiprand-dev \
+  && apt-get clean -y
 
-# install triton client
-RUN pip3 install tritonclient[all]
-
-# additional Python package needed for acorn
-RUN pip3 install git+https://github.com/LAL/trackml-library.git \
-pyyaml click pytest pytest-cov class-resolver scipy pandas matplotlib uproot tqdm ipykernel \
-atlasify networkx seaborn wandb mplhep
+# Install Alpaka v2.1.1
+RUN cd /tmp && mkdir -p src \
+  && ${GET} https://github.com/alpaka-group/alpaka/archive/refs/tags/2.1.1.tar.gz \
+    | ${UNPACK_TO_SRC} \
+  && cmake -B build -S src -GNinja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=${PREFIX} \
+    -DCMAKE_CXX_STANDARD=17 \
+    -Dalpaka_ACC_CPU_B_SEQ_T_SEQ_ENABLE=ON \
+    -Dalpaka_ACC_CPU_B_OMP2_T_SEQ_ENABLE=ON \
+    -Dalpaka_ACC_GPU_CUDA_ENABLE=OFF \
+    -Dalpaka_ACC_GPU_HIP_ENABLE=ON \
+    -DBUILD_TESTING=OFF \
+  && cmake --build build -- install -j20 \
+  && cd /tmp && rm -rf src build
