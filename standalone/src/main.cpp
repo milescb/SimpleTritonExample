@@ -1,5 +1,7 @@
-#ifdef USE_ALPAKA_BACKEND
+#if defined(USE_ALPAKA_BACKEND)
 #include "AlpakaExample.h"
+#elif defined(USE_CUDA_BACKEND)
+#include "CudaExample.h"
 #else
 #include "HipExample.h"
 #endif
