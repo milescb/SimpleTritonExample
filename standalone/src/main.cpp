@@ -1,4 +1,8 @@
+#ifdef USE_ALPAKA_BACKEND
+#include "AlpakaExample.h"
+#else
 #include "HipExample.h"
+#endif
 #include <iostream>
 
 int main() {

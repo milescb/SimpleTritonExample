@@ -75,5 +75,21 @@ RUN apt-get update -y && apt-get install -y wget gnupg2 ca-certificates \
   && echo -e 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600' \
     | tee /etc/apt/preferences.d/rocm-pin-600 \
   && apt-get update -y \
-  && apt-get install -y rocm-dev hip-dev rocminfo \
+  && apt-get install -y rocm-dev hip-dev rocminfo rocrand-dev hiprand-dev \
   && apt-get clean -y
+
+# Install Alpaka v2.1.1
+RUN cd /tmp && mkdir -p src \
+  && ${GET} https://github.com/alpaka-group/alpaka/archive/refs/tags/2.1.1.tar.gz \
+    | ${UNPACK_TO_SRC} \
+  && cmake -B build -S src -GNinja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=${PREFIX} \
+    -DCMAKE_CXX_STANDARD=17 \
+    -Dalpaka_ACC_CPU_B_SEQ_T_SEQ_ENABLE=ON \
+    -Dalpaka_ACC_CPU_B_OMP2_T_SEQ_ENABLE=ON \
+    -Dalpaka_ACC_GPU_CUDA_ENABLE=OFF \
+    -Dalpaka_ACC_GPU_HIP_ENABLE=ON \
+    -DBUILD_TESTING=OFF \
+  && cmake --build build -- install -j20 \
+  && cd /tmp && rm -rf src build
