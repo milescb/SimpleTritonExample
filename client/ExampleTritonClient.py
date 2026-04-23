@@ -15,7 +15,7 @@ def main():
         print("channel creation failed: " + str(e))
         sys.exit(1)
 
-    input_data = np.random.rand(4, 4).astype(np.float32)
+    input_data = np.random.rand(10000, 4).astype(np.float32)
     
     print("Input data:")
     print(input_data)

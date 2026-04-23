@@ -21,7 +21,10 @@ To compile with AMD GPUs, add the argument `-DTRITON_ENABLE_ROCM=ON` during conf
 
 ```
 cmake -B . -S ../ \
-    -DCMAKE_INSTALL_PREFIX=../install/ -DCMAKE_BUILD_TYPE=Release -DTRITON_ENABLE_ROCM=ON -DCMAKE_HIP_ARCHITECTURES="gfx1101" -DTRITON_USE_LOCAL_DEPS=ON -DTRITON_LOCAL_DEPS_PATH=../triton-deps
+    -DCMAKE_INSTALL_PREFIX=../install/ -DCMAKE_BUILD_TYPE=Release \
+    -DTRITON_ENABLE_ROCM=ON -DCMAKE_HIP_ARCHITECTURES="gfx1101"
+
+cmake --build . --target install -- -j20
 ```
 
 To start the sever after building, run the command:
@@ -45,3 +48,16 @@ This backend takes in a 4x4 array, and returns the same array; however, what dat
 ## Running the client
 
 To run the client, open another terminal window _on the same node_ as the backend, after starting the backend sever. Navigate to the `client` repository and run `python ExampleTritonClient.py`. If you would like to change the inputs or outputs, modify `backend/models/example/config.pbtxt`, then modify the `python` code to match and re-run. 
+
+Note, in some cases you might need to run `no_proxy=localhost python ExampleTritonClient.py`
+
+## Testbed internet access
+
+```
+export HTTP_PROXY=http://np04-web-proxy.cern.ch:3128
+export HTTPS_PROXY=http://np04-web-proxy.cern.ch:3128
+export NO_PROXY=".cern.ch"
+export http_proxy=http://np04-web-proxy.cern.ch:3128
+export https_proxy=http://np04-web-proxy.cern.ch:3128
+export no_proxy=".cern.ch"
+```

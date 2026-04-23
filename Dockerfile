@@ -70,10 +70,10 @@ RUN apt-get update -y && apt-get install -y wget gnupg2 ca-certificates \
   && mkdir -p --mode=0755 /etc/apt/keyrings \
   && wget -qO - https://repo.radeon.com/rocm/rocm.gpg.key \
     | gpg --dearmor | tee /etc/apt/keyrings/rocm.gpg > /dev/null \
-  && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.2.4 jammy main" \
+  && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.2.4 noble main" \
     | tee /etc/apt/sources.list.d/rocm.list \
   && echo -e 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600' \
     | tee /etc/apt/preferences.d/rocm-pin-600 \
   && apt-get update -y \
-  && apt-get install -y rocm-hip-sdk rocminfo \
+  && apt-get install -y rocm-dev hip-dev rocminfo \
   && apt-get clean -y

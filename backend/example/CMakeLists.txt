@@ -28,6 +28,8 @@ cmake_minimum_required(VERSION 3.22)
 
 project(tutorialrecommendedbackend LANGUAGES C CXX)
 
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../standalone/src)
+
 #
 # Options
 #
@@ -49,7 +51,7 @@ set(ROCM_PATH "/opt/rocm" CACHE PATH "ROCm installation path")
 #
 # Setting C++ min standard
 #
-set(TRITON_MIN_CXX_STANDARD 17 CACHE STRING "The minimum C++ standard whose features are requested to build this target.")
+set(TRITON_MIN_CXX_STANDARD 20 CACHE STRING "The minimum C++ standard whose features are requested to build this target.")
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
@@ -144,62 +146,33 @@ endif()
 #
 # Dependencies
 #
-# Option to use local dependencies instead of fetching from Git
-#
-option(TRITON_USE_LOCAL_DEPS "Use local dependency directories instead of fetching from Git" OFF)
-set(TRITON_LOCAL_DEPS_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../triton-deps" CACHE PATH "Path to local Triton dependencies")
 
-# CRITICAL: Disable all testing BEFORE including any dependencies
 # This must be set before FetchContent to propagate to all subprojects
 set(BUILD_TESTING OFF CACHE BOOL "Disable all testing" FORCE)
 set(TRITON_ENABLE_TESTS OFF CACHE BOOL "Disable Triton tests" FORCE)
 set(TRITON_ENABLE_EXAMPLES OFF CACHE BOOL "Disable examples" FORCE)
 
-# Prevent CMake from downloading anything
-set(FETCHCONTENT_FULLY_DISCONNECTED ON CACHE BOOL "Disable all downloads" FORCE)
-set(FETCHCONTENT_QUIET OFF CACHE BOOL "Show fetch content output" FORCE)
-
 include(FetchContent)
 
-if(TRITON_USE_LOCAL_DEPS)
-  # Use local directories
-  message(STATUS "Using local dependencies from: ${TRITON_LOCAL_DEPS_PATH}")
-  message(STATUS "BUILD_TESTING is: ${BUILD_TESTING}")
-  message(STATUS "FETCHCONTENT_FULLY_DISCONNECTED is: ${FETCHCONTENT_FULLY_DISCONNECTED}")
-  
-  FetchContent_Declare(
-    repo-common
-    SOURCE_DIR ${TRITON_LOCAL_DEPS_PATH}/common
-  )
-  FetchContent_Declare(
-    repo-core
-    SOURCE_DIR ${TRITON_LOCAL_DEPS_PATH}/core
-  )
-  FetchContent_Declare(
-    repo-backend
-    SOURCE_DIR ${TRITON_LOCAL_DEPS_PATH}/backend
-  )
-else()
-  # Fetch from Git (original behavior)
-  FetchContent_Declare(
-    repo-common
-    GIT_REPOSITORY ${TRITON_REPO_ORGANIZATION}/common.git
-    GIT_TAG ${TRITON_COMMON_REPO_TAG}
-    GIT_SHALLOW ON
-  )
-  FetchContent_Declare(
-    repo-core
-    GIT_REPOSITORY ${TRITON_REPO_ORGANIZATION}/core.git
-    GIT_TAG ${TRITON_CORE_REPO_TAG}
-    GIT_SHALLOW ON
-  )
-  FetchContent_Declare(
-    repo-backend
-    GIT_REPOSITORY ${TRITON_REPO_ORGANIZATION}/backend.git
-    GIT_TAG ${TRITON_BACKEND_REPO_TAG}
-    GIT_SHALLOW ON
-  )
-endif()
+# Fetch from Git (original behavior)
+FetchContent_Declare(
+  repo-common
+  GIT_REPOSITORY ${TRITON_REPO_ORGANIZATION}/common.git
+  GIT_TAG ${TRITON_COMMON_REPO_TAG}
+  GIT_SHALLOW ON
+)
+FetchContent_Declare(
+  repo-core
+  GIT_REPOSITORY ${TRITON_REPO_ORGANIZATION}/core.git
+  GIT_TAG ${TRITON_CORE_REPO_TAG}
+  GIT_SHALLOW ON
+)
+FetchContent_Declare(
+  repo-backend
+  GIT_REPOSITORY ${TRITON_REPO_ORGANIZATION}/backend.git
+  GIT_TAG ${TRITON_BACKEND_REPO_TAG}
+  GIT_SHALLOW ON
+)
 
 FetchContent_MakeAvailable(repo-common repo-core repo-backend)
 
@@ -213,6 +186,26 @@ add_library(
   triton-recommended-backend SHARED
   src/recommended.cc
 )
+
+# Force HIP compiler (clang++) for .cc files when ROCm is enabled,
+# since CMake doesn't recognize .cc as a HIP source by default.
+# Also explicitly propagate Triton include dirs to the HIP compiler,
+# as CMake does not always forward INTERFACE_INCLUDE_DIRECTORIES from
+# CXX targets to HIP-language source files.
+if(TRITON_ENABLE_ROCM)
+  set_source_files_properties(
+    src/recommended.cc
+    PROPERTIES LANGUAGE HIP
+  )
+  target_include_directories(
+    triton-recommended-backend
+    PRIVATE
+      $<TARGET_PROPERTY:triton-backend-utils,INTERFACE_INCLUDE_DIRECTORIES>
+      $<TARGET_PROPERTY:triton-core-backendapi,INTERFACE_INCLUDE_DIRECTORIES>
+      $<TARGET_PROPERTY:triton-core-serverapi,INTERFACE_INCLUDE_DIRECTORIES>
+      $<TARGET_PROPERTY:triton-core-serverstub,INTERFACE_INCLUDE_DIRECTORIES>
+  )
+endif()
 
 add_library(
   TutorialRecommendedBackend::triton-recommended-backend ALIAS triton-recommended-backend
