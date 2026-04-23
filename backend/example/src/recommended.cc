@@ -33,7 +33,11 @@
 
 #ifdef TRITON_ENABLE_ROCM
 #include <hip/hip_runtime.h>
+#if defined(TRITON_ENABLE_ALPAKA)
+#include "AlpakaExample.h"
+#else
 #include "HipExample.h"
+#endif
 #endif
 
 namespace triton { namespace backend { namespace recommended {
@@ -451,25 +455,21 @@ TRITONBACKEND_ModelInstanceInitialize(TRITONBACKEND_ModelInstance* instance)
   RETURN_IF_ERROR(TRITONBACKEND_ModelInstanceSetState(
       instance, reinterpret_cast<void*>(instance_state)));
   
-  // Set the HIP device for this thread
+  int device_id = instance_state->DeviceId();
+  std::cout << device_id << std::endl;
 
-  // KIND_MODEL instances may return -1 for DeviceId(); default to device 0.
-  // TODO: check if this is needed!
-  int hip_device_id = instance_state->DeviceId();
-  if (hip_device_id < 0) {
-    hip_device_id = 0;
-  }
+  #ifdef TRITON_ENABLE_ROCM
+    hipError_t hip_err = hipSetDevice(device_id);
+    if (hip_err != hipSuccess) {
+      return TRITONSERVER_ErrorNew(
+          TRITONSERVER_ERROR_INTERNAL,
+          (std::string("hipSetDevice failed: ") +
+          hipGetErrorString(hip_err))
+              .c_str());
+    }
+  #endif
 
-  hipError_t hip_err = hipSetDevice(hip_device_id);
-  if (hip_err != hipSuccess) {
-    return TRITONSERVER_ErrorNew(
-        TRITONSERVER_ERROR_INTERNAL,
-        (std::string("hipSetDevice failed: ") +
-        hipGetErrorString(hip_err))
-            .c_str());
-  }
-
-  instance_state->hip_gpu_processor_ = std::make_unique<GpuProcessor>(instance_state->DeviceId());
+  instance_state->hip_gpu_processor_ = std::make_unique<GpuProcessor>(device_id);
 
   return nullptr;  // success
 }
@@ -605,7 +605,8 @@ TRITONBACKEND_ModelInstanceExecute(
   BackendInputCollector collector(
       requests, request_count, &responses, model_state->TritonMemoryManager(),
       false /* pinned_enabled */, nullptr /* stream*/);
-
+  
+  // The backend completely deals with GPU memory
   std::vector<std::pair<TRITONSERVER_MemoryType, int64_t>> allowed_input_types =
       {{TRITONSERVER_MEMORY_CPU_PINNED, 0}, {TRITONSERVER_MEMORY_CPU, 0}};
 

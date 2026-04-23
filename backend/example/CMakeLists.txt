@@ -35,11 +35,11 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../standalone/src)
 #
 # GPU support options for both NVIDIA and AMD
 #
-option(TRITON_ENABLE_GPU "Enable GPU support in backend" OFF)
+option(TRITON_ENABLE_CUDA "Enable NVIDIA CUDA support in backend" OFF)
 option(TRITON_ENABLE_ROCM "Enable AMD ROCm support" OFF)
+option(TRITON_ENABLE_ALPAKA "Use Alpaka portability layer (requires TRITON_ENABLE_ROCM)" OFF)
 option(TRITON_ENABLE_STATS "Include statistics collections in backend" ON)
 
-# SHOULD BE UPDATED FOR NEW RELEASES
 set(TRITON_REPO_ORGANIZATION "https://github.com/triton-inference-server" CACHE STRING "Git repository to pull from")
 set(TRITON_COMMON_REPO_TAG "r25.02" CACHE STRING "Tag for triton-inference-server/common repo")
 set(TRITON_CORE_REPO_TAG "r25.02" CACHE STRING "Tag for triton-inference-server/core repo")
@@ -61,14 +61,11 @@ endif()
 # ROCm/HIP Configuration
 #
 if(TRITON_ENABLE_ROCM)
-  # Use TRITON_ROCM_HOME for compatibility with template behavior
   set(TRITON_ROCM_HOME ${ROCM_PATH})
 
-  # Export environment variables for ROCm tools
   set(ENV{ROCM_PATH} ${TRITON_ROCM_HOME})
   set(ENV{HIP_PATH} ${TRITON_ROCM_HOME})
 
-  # Add ROCm install dirs to CMake prefix path so find_package can locate components
   list(APPEND CMAKE_PREFIX_PATH
     ${TRITON_ROCM_HOME}
     ${TRITON_ROCM_HOME}/hip
@@ -78,11 +75,9 @@ if(TRITON_ENABLE_ROCM)
     $ENV{HIP_PATH}
   )
 
-  # Also append any cmake components under lib/cmake
   file(GLOB rocm_cmake_components ${TRITON_ROCM_HOME}/lib/cmake/*)
   list(APPEND CMAKE_PREFIX_PATH ${rocm_cmake_components})
 
-  # Default HIP compiler and architectures if not provided by user
   if(NOT DEFINED CMAKE_HIP_COMPILER)
     set(CMAKE_HIP_COMPILER "${TRITON_ROCM_HOME}/llvm/bin/clang++")
   endif()
@@ -91,11 +86,9 @@ if(TRITON_ENABLE_ROCM)
     set(CMAKE_HIP_ARCHITECTURES "gfx906;gfx908;gfx90a;gfx1030;gfx1100;gfx1101;gfx940;gfx941;gfx942" CACHE STRING "HIP architectures")
   endif()
 
-  # Enable HIP language and find HIP package
   enable_language(HIP)
   find_package(hip REQUIRED CONFIG PATHS ${TRITON_ROCM_HOME})
 
-  # Add ROCm include directories and link directories
   include_directories(
     ${TRITON_ROCM_HOME}/include
     ${TRITON_ROCM_HOME}/hip/include
@@ -106,12 +99,9 @@ if(TRITON_ENABLE_ROCM)
     ${TRITON_ROCM_HOME}/hip/lib
   )
 
-  # Define preprocessor macro for conditional compilation
-  add_compile_definitions(TRITON_ENABLE_ROCM)
-  add_compile_definitions(__HIP_PLATFORM_AMD__)
+  add_compile_definitions(TRITON_ENABLE_ROCM __HIP_PLATFORM_AMD__)
   set(HIP_PLATFORM "amd" CACHE STRING "HIP platform")
 
-  # Try to detect ROCm version from .info/version-dev (if present)
   if(EXISTS "${TRITON_ROCM_HOME}/.info/version-dev")
     file(READ "${TRITON_ROCM_HOME}/.info/version-dev" ROCM_VERSION_DEV_RAW)
     string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)-.*$" ROCM_VERSION_DEV_MATCH ${ROCM_VERSION_DEV_RAW})
@@ -129,17 +119,29 @@ if(TRITON_ENABLE_ROCM)
   message(STATUS "HIP compiler: ${CMAKE_HIP_COMPILER}")
   message(STATUS "HIP architectures: ${CMAKE_HIP_ARCHITECTURES}")
   if(DEFINED ROCM_VERSION_DEV)
-    message(STATUS "ROCm version (from .info/version-dev): ${ROCM_VERSION_DEV} (${ROCM_VERSION_DEV_INT})")
+    message(STATUS "ROCm version: ${ROCM_VERSION_DEV} (${ROCM_VERSION_DEV_INT})")
   endif()
+endif()
+
+#
+# Alpaka Configuration
+#
+if(TRITON_ENABLE_ALPAKA)
+  if(NOT TRITON_ENABLE_ROCM)
+    message(FATAL_ERROR "TRITON_ENABLE_ALPAKA requires TRITON_ENABLE_ROCM")
+  endif()
+  find_package(alpaka REQUIRED HINTS /usr/local/lib/cmake/alpaka)
+  add_compile_definitions(TRITON_ENABLE_ALPAKA ALPAKA_ACC_GPU_HIP_ENABLED)
+  message(STATUS "Alpaka portability layer enabled (HIP backend)")
 endif()
 
 #
 # CUDA Configuration (for NVIDIA GPUs)
 #
-if(TRITON_ENABLE_GPU AND NOT TRITON_ENABLE_ROCM)
+if(TRITON_ENABLE_CUDA)
   find_package(CUDAToolkit REQUIRED)
   enable_language(CUDA)
-  add_compile_definitions(TRITON_ENABLE_GPU)
+  add_compile_definitions(TRITON_ENABLE_CUDA)
   message(STATUS "CUDA support enabled")
 endif()
 
@@ -253,10 +255,16 @@ if(TRITON_ENABLE_ROCM)
   
   # Optional: Add rocBLAS, rocRAND, etc. if needed
   # target_link_libraries(triton-recommended-backend PRIVATE roc::rocblas)
+
+  if(TRITON_ENABLE_ALPAKA)
+    target_link_libraries(triton-recommended-backend PRIVATE alpaka::alpaka)
+    target_include_directories(triton-recommended-backend PRIVATE
+      $<TARGET_PROPERTY:alpaka::alpaka,INTERFACE_INCLUDE_DIRECTORIES>)
+  endif()
 endif()
 
 # Add CUDA libraries if enabled
-if(TRITON_ENABLE_GPU AND NOT TRITON_ENABLE_ROCM)
+if(TRITON_ENABLE_CUDA)
   target_link_libraries(
     triton-recommended-backend
     PRIVATE
