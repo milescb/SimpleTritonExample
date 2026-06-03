@@ -17,9 +17,9 @@ __global__ void kernel_add(const float* a, const float* b, float* out, size_t n)
     if (i < n) out[i] = a[i] + b[i];
 }
 
-class GpuProcessor {
+class StandaloneProcessor {
 public:
-    GpuProcessor(int device_id) : device_id_(device_id) {}
+    StandaloneProcessor(int device_id) : device_id_(device_id) {}
 
     void initialize() {
         HIP_CHECK(hipSetDevice(device_id_));

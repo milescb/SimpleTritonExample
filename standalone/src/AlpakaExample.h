@@ -17,7 +17,7 @@ struct AddKernel {
     }
 };
 
-class GpuProcessor {
+class StandaloneProcessor {
 public:
     using Dim = alpaka::DimInt<1u>;
     using Idx = uint32_t;
@@ -37,7 +37,7 @@ public:
     using Queue  = alpaka::Queue<Acc, alpaka::Blocking>;
     using BufDev = alpaka::Buf<Dev, float, Dim, Idx>;
 
-    GpuProcessor(int device_id) : device_id_(static_cast<Idx>(device_id)) {}
+    StandaloneProcessor(int device_id) : device_id_(static_cast<Idx>(device_id)) {}
 
     void initialize() {}
 

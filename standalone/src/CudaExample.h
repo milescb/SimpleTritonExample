@@ -17,9 +17,9 @@ __global__ void kernel_add(const float* a, const float* b, float* out, size_t n)
     if (i < n) out[i] = a[i] + b[i];
 }
 
-class GpuProcessor {
+class StandaloneProcessor {
 public:
-    GpuProcessor(int device_id) : device_id_(device_id) {}
+    StandaloneProcessor(int device_id) : device_id_(device_id) {}
 
     void initialize() {
         CUDA_CHECK(cudaSetDevice(device_id_));
