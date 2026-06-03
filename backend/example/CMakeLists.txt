@@ -146,6 +146,13 @@ if(TRITON_ENABLE_CUDA)
 endif()
 
 #
+# CPU Configuration (default when no GPU backend is enabled)
+#
+if(NOT TRITON_ENABLE_ROCM AND NOT TRITON_ENABLE_CUDA AND NOT TRITON_ENABLE_ALPAKA)
+  message(STATUS "No GPU backend enabled, building CPU standalone backend")
+endif()
+
+#
 # Dependencies
 #
 

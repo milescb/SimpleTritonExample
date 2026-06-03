@@ -28,6 +28,19 @@ the CUDA libraries as this will cause compilation errors**.
 To build the example backend, navigate to `backend/example` and make a `build` and `install` directory. 
 Then, `cd` to the `build` directory and run the configure and install commands below:
 
+### CPU (default):
+
+If none of the GPU backends are enabled, the backend builds against the CPU
+standalone implementation:
+
+```
+cmake -B . -S ../ \
+    -DCMAKE_INSTALL_PREFIX=../install/ \
+    -DCMAKE_BUILD_TYPE=Release
+
+cmake --build . --target install -- -j20
+```
+
 ### NVIDIA GPUs:
 
 ```

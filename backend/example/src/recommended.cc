@@ -63,6 +63,8 @@ static cudaStream_t setCudaDeviceAndGetStream(int deviceID)
     CUDA_ERROR_CHECK(cudaStreamCreate(&stream));
     return stream;
 }
+#else
+#include "CpuExample.h"
 #endif
 
 namespace triton { namespace backend { namespace recommended {
