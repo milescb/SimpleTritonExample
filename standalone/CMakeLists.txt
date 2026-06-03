@@ -12,6 +12,7 @@ if(ENABLE_HIP)
     set_source_files_properties(src/main.cpp
         TARGET_DIRECTORY gpu_processor_hip
         PROPERTIES LANGUAGE HIP)
+    target_compile_definitions(gpu_processor_hip PRIVATE USE_HIP_BACKEND)
     target_link_libraries(gpu_processor_hip PRIVATE hip::device)
 endif()
 
@@ -33,4 +34,9 @@ if(ENABLE_CUDA)
         PROPERTIES LANGUAGE CUDA)
     target_compile_definitions(gpu_processor_cuda PRIVATE USE_CUDA_BACKEND)
     target_link_libraries(gpu_processor_cuda PRIVATE CUDA::cudart)
+endif()
+
+if(NOT ENABLE_HIP AND NOT ENABLE_ALPAKA AND NOT ENABLE_CUDA)
+    add_executable(cpu_processor src/main.cpp)
+    target_compile_definitions(cpu_processor PRIVATE USE_CPU_BACKEND)
 endif()

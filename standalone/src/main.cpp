@@ -2,8 +2,10 @@
 #include "AlpakaExample.h"
 #elif defined(USE_CUDA_BACKEND)
 #include "CudaExample.h"
-#else
+#elif defined(USE_HIP_BACKEND)
 #include "HipExample.h"
+#else
+#include "CpuExample.h"
 #endif
 #include <iostream>
 
