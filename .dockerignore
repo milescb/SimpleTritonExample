@@ -1,0 +1,7 @@
+# Build / install artifacts (regenerated inside the image)
+backend/example/build/
+backend/example/install/
+standalone/build/
+
+# VCS
+.git/

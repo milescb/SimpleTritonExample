@@ -2,13 +2,15 @@
 #include "AlpakaExample.h"
 #elif defined(USE_CUDA_BACKEND)
 #include "CudaExample.h"
-#else
+#elif defined(USE_HIP_BACKEND)
 #include "HipExample.h"
+#else
+#include "CpuExample.h"
 #endif
 #include <iostream>
 
 int main() {
-    GpuProcessor proc(0);  // device 0
+    StandaloneProcessor proc(0);  // device 0
     proc.initialize();
 
     std::vector<std::vector<float>> a = {{1.f, 2.f, 3.f, 4.f},

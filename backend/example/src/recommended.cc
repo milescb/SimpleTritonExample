@@ -63,6 +63,8 @@ static cudaStream_t setCudaDeviceAndGetStream(int deviceID)
     CUDA_ERROR_CHECK(cudaStreamCreate(&stream));
     return stream;
 }
+#else
+#include "CpuExample.h"
 #endif
 
 namespace triton { namespace backend { namespace recommended {
@@ -428,7 +430,7 @@ class ModelInstanceState : public BackendModelInstance {
     ModelState* StateForModel() const { return model_state_; }
 
     // Define standalone object
-    std::unique_ptr<GpuProcessor> hip_gpu_processor_;
+    std::unique_ptr<StandaloneProcessor> hip_gpu_processor_;
     #ifdef TRITON_ENABLE_CUDA
       cudaStream_t cuda_stream_ = nullptr;
     #endif
@@ -510,7 +512,7 @@ TRITONBACKEND_ModelInstanceInitialize(TRITONBACKEND_ModelInstance* instance)
     }
   #endif
 
-  instance_state->hip_gpu_processor_ = std::make_unique<GpuProcessor>(device_id);
+  instance_state->hip_gpu_processor_ = std::make_unique<StandaloneProcessor>(device_id);
 
   return nullptr;  // success
 }
