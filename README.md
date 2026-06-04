@@ -76,6 +76,12 @@ cmake --build . --target install -- -j20
 
 Note: currently, Alpaka is only configured to work with the AMD chip. 
 
+### Building backend image for CPU
+
+```
+docker build -f backend/Dockerfile -t <repo_name>:<tag> .
+```
+
 ## Run the backend
 
 To start the server after building, run the command:
